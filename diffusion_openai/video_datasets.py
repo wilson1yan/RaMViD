@@ -1,6 +1,7 @@
 from random import sample
 from PIL import Image, ImageSequence
 import blobfile as bf
+import random
 from mpi4py import MPI
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
@@ -58,6 +59,16 @@ def load_data(
             rgb=rgb,
             seq_len=seq_len
         )
+    elif entry in ["npy"]:
+        dataset = VideoDataset_npy(
+            image_size,
+            all_files,
+            classes=classes,
+            shard=MPI.COMM_WORLD.Get_rank(),
+            num_shards=MPI.COMM_WORLD.Get_size(),
+            rgb=rgb,
+            seq_len=seq_len
+        )
     if deterministic:
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=False, num_workers=16, drop_last=True
@@ -75,7 +86,7 @@ def _list_video_files_recursively(data_dir):
     for entry in sorted(bf.listdir(data_dir)):
         full_path = bf.join(data_dir, entry)
         ext = entry.split(".")[-1]
-        if "." in entry and ext.lower() in ["gif", "avi", "mp4"]:
+        if "." in entry and ext.lower() in ["gif", "avi", "mp4", "npy"]:
             results.append(full_path)
         elif bf.isdir(full_path):
             results.extend(_list_video_files_recursively(full_path))
@@ -190,3 +201,32 @@ class VideoDataset_gif(Dataset):
         if self.local_classes is not None:
             out_dict["y"] = np.array(self.local_classes[idx], dtype=np.int64)
         return arr_seq, out_dict
+
+
+class VideoDataset_npy(Dataset):
+    def __init__(self, resolution, video_paths, classes=None, shard=0, num_shards=1, rgb=True, seq_len=20):
+        super().__init__()
+        self.resolution = resolution
+        self.local_videos = video_paths[shard:][::num_shards]
+        self.local_classes = None if classes is None else classes[shard:][::num_shards]
+        self.rgb = rgb
+        self.seq_len = seq_len
+
+    def __len__(self):
+        return len(self.local_videos)
+
+    def __getitem__(self, idx):
+        path = self.local_videos[idx]
+        with bf.BlobFile(path, "rb") as f:
+            video = np.load(f) 
+            video = video.astype(np.float32) / 127.5 - 1
+            video = np.transpose(video, [3, 0, 1, 2]) 
+        if video.shape[1] > self.seq_len:
+            start = np.random.randint(0, video.shape[1]-self.seq_len)
+            video = video[:,start:start + self.seq_len]
+        if 'train' in path:
+            if random.random() < 0.5:
+                video = video[:, :, :, ::-1]
+            
+        out_dict = {}
+        return video, out_dict
