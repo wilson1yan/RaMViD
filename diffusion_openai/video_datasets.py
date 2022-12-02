@@ -226,7 +226,7 @@ class VideoDataset_npy(Dataset):
             video = video[:,start:start + self.seq_len]
         if 'train' in path:
             if random.random() < 0.5:
-                video = video[:, :, :, ::-1]
+                video = np.copy(video[:, :, :, ::-1])
             
         out_dict = {}
         return video, out_dict
